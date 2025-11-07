@@ -140,6 +140,10 @@ const audioFiles = [
         name: "OpenAI Alloy test (short)",
         path: "audios/OpenAI_Alloy_test_short.mp3",
       },
+      {
+        name: "Chatbot Kit welcome message",
+        path: "audios/welcome-message.mp3",
+      },
     ],
   },
 ];
