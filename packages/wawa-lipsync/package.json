@@ -1,7 +1,7 @@
 {
   "name": "wawa-lipsync",
   "private": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "license": "MIT",
   "types": "dist/index.d.ts",
   "main": "dist/wawa-lipsync.umd.js",

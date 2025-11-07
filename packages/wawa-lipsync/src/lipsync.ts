@@ -54,6 +54,8 @@ export class Lipsync {
   private bands: Band[];
   private audioSource?: HTMLMediaElement;
   private state: FSMStates = FSMStates.silence;
+  private visemeStartTime: number = 0; // Timestamp when current viseme started (ms)
+  private maxVisemeDuration: number = 100; // Max duration in ms before penalty kicks in
   constructor(
     params = {
       fftSize: 2048,
@@ -88,6 +90,7 @@ export class Lipsync {
     this.history = [];
     this.features = null;
     this.state = FSMStates.silence;
+    this.visemeStartTime = performance.now();
 
     if (this.audioSource === audio) {
       return;
@@ -226,6 +229,11 @@ export class Lipsync {
 
     // Map viseme to state
     let newState = VISEMES_STATES[topViseme];
+
+    // Track viseme duration - reset timestamp if viseme changed
+    if (topViseme !== this.viseme) {
+      this.visemeStartTime = performance.now();
+    }
 
     // Update state and viseme
     this.state = newState;
@@ -366,19 +374,40 @@ export class Lipsync {
   adjustScoresForConsistency(scores: Record<VISEMES, number>) {
     const adjustedScores = { ...scores };
 
-    // Boost scores for visemes matching current state and viseme
+    // Apply decaying boost/penalty based on viseme duration
     if (this.viseme && this.state) {
+      const currentTime = performance.now();
+      const visemeDuration = currentTime - this.visemeStartTime; // Duration in ms
+
       for (const viseme in adjustedScores) {
-        // const visemeState = VISEMES_STATES[viseme];
-        // const isCurrentStateRelevant = visemeState === this.state;
         const isCurrentViseme = viseme === this.viseme;
 
         if (isCurrentViseme) {
-          adjustedScores[viseme] *= 1.3;
+          // Calculate decay factor based on duration
+          // Early phase (0-100ms): Full boost (1.3x)
+          // Mid phase (100-300ms): Gradual decay from 1.3x to 1.0x
+          // Late phase (300ms+): Penalty that increases over time
+          let boostFactor: number;
+
+          const earlyPhaseEnd = 100; // ms
+
+          if (visemeDuration <= earlyPhaseEnd) {
+            // Normal boost for first 100ms
+            boostFactor = 1.3;
+          } else if (visemeDuration <= this.maxVisemeDuration) {
+            // Gradual decay: linearly interpolate from 1.3 to 1.0
+            const decayRange = this.maxVisemeDuration - earlyPhaseEnd;
+            const decay = (visemeDuration - earlyPhaseEnd) / decayRange;
+            boostFactor = 1.3 - 0.3 * decay;
+          } else {
+            // Apply penalty after maxVisemeDuration
+            // Penalty increases the longer it's held
+            const excessDuration = visemeDuration - this.maxVisemeDuration;
+            boostFactor = Math.max(0.5, 1.0 - excessDuration / 1000);
+          }
+
+          adjustedScores[viseme] *= boostFactor;
         }
-        // if (isCurrentStateRelevant) {
-        //   adjustedScores[viseme] *= 1.15;
-        // }
       }
     }
 
