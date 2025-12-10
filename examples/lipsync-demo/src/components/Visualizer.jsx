@@ -279,8 +279,13 @@ export const Visualizer = () => {
       });
     };
 
+    let animationFrameId;
+
     const analyzeAudio = () => {
-      requestAnimationFrame(analyzeAudio);
+      // Check if canvas is available before drawing
+      if (!canvasRef.current) return;
+
+      animationFrameId = requestAnimationFrame(analyzeAudio);
       lipsyncManager.processAudio();
       const viseme = lipsyncManager.viseme;
       const features = lipsyncManager.features;
@@ -295,12 +300,19 @@ export const Visualizer = () => {
       }
       drawVisualisation(features, viseme);
       if (viseme !== prevViseme.current) {
-        setDetectedVisemes((prev) => [...prev, viseme]);
+        setDetectedVisemes((prev) => prev.concat([viseme]));
         prevViseme.current = viseme;
       }
     };
 
     analyzeAudio();
+
+    // Cleanup function to cancel the animation frame when component unmounts
+    return () => {
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
+    };
   }, []);
 
   return (

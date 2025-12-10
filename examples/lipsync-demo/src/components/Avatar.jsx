@@ -5,43 +5,206 @@ Command: npx gltfjsx@6.2.3 public/models/64f1a714fe61576b46f27ca2.glb -o src/com
 
 import { useAnimations, useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 
-import { useControls } from "leva";
 import * as THREE from "three";
 import { VISEMES } from "wawa-lipsync";
 import { lipsyncManager } from "../App";
 
 let setupMode = false;
 
+// Seconds before switching to another talking anim while audio is playing
+const TALK_SWITCH_INTERVAL = 2.5;
+
 export function Avatar(props) {
-  const { nodes, materials, scene } = useGLTF(
-    "/models/64f1a714fe61576b46f27ca2.glb"
-  );
+  const {
+    requestedAnimation,
+    smoothMovements = true,
+    selectedCharacter = "aima"
+  } = props;
+  // Map character selection to model files
+  const characterModels = {
+    aima: "/models/6936b0da347390125d6069ae (2).glb",
+    sara: "/models/Sara.glb",
+    custom: "/models/6936b0da347390125d6069ae (2).glb",
+  };
 
-  const { smoothMovements } = useControls("Avatar", {
-    smoothMovements: {
-      value: true,
-      label: "Smooth Movements",
-    },
-  });
+  const modelPath = characterModels[selectedCharacter] || characterModels.aima;
 
-  const { animations } = useGLTF("/models/animations.glb");
+  const { nodes, materials, scene } = useGLTF(modelPath);
+
+  // Load animations
+  const { animations: originalAnimations } = useGLTF("/models/animations.glb");
+
+  // Clone and filter animations to remove invalid tracks
+  const animations = useMemo(() => {
+    if (!originalAnimations || !scene) return [];
+
+    return originalAnimations.map((clip) => {
+      const newClip = clip.clone();
+
+      // Filter out tracks for nodes that don't exist in the model
+      newClip.tracks = newClip.tracks.filter((track) => {
+        // Remove Hips.position tracks (fixes squatting)
+        if (track.name.includes("Hips.position")) return false;
+
+        // Extract node name from track (e.g., "LeftEye_end.position" -> "LeftEye_end")
+        const nodeName = track.name.split('.')[0];
+
+        // Check if node exists in the scene
+        const nodeExists = scene.getObjectByName(nodeName) !== undefined;
+
+        if (!nodeExists) {
+          // Silently skip missing nodes (prevents console spam)
+          return false;
+        }
+
+        return true;
+      });
+
+      return newClip;
+    });
+  }, [originalAnimations, scene]);
+
+  // Only use the three talking animations we care about
+  const talkingAnimations = useMemo(() =>
+    animations
+      ?.filter((a) =>
+        ["Talking_0", "Talking_1", "Talking_2"].includes(a.name)
+      )
+      .map((a) => a.name) || [], [animations]);
 
   const group = useRef();
   const { actions, mixer } = useAnimations(animations, group);
-  const [animation, setAnimation] = useState(
-    animations.find((a) => a.name === "Idle") ? "Idle" : animations[0].name // Check if Idle animation exists otherwise use first animation
-  );
+
+  const [animation, setAnimation] = useState("Idle");
+
   useEffect(() => {
-    actions[animation]
-      ?.reset()
-      .fadeIn(mixer.stats.actions.inUse === 0 ? 0 : 0.5)
-      .play();
+    if (animations.length > 0) {
+      setAnimation(animations.find((a) => a.name === "Idle") ? "Idle" : animations[0].name);
+    }
+  }, [animations]);
+
+  const [isTalking, setIsTalking] = useState(false);
+  const talkTimer = useRef(0);
+
+  const pickRandomTalking = (exclude) => {
+    if (!talkingAnimations.length) return null;
+    if (talkingAnimations.length === 1) return talkingAnimations[0];
+
+    let choice;
+    do {
+      const idx = Math.floor(Math.random() * talkingAnimations.length);
+      choice = talkingAnimations[idx];
+    } while (choice === exclude);
+
+    return choice;
+  };
+
+  // Trigger requested animation from useChat
+  useEffect(() => {
+    if (!requestedAnimation) return;
+    if (requestedAnimation.startsWith("Talking")) return; // talking is controlled by audio
+    if (isTalking) return;
+
+    if (actions[requestedAnimation]) {
+      console.log(`🎬 Playing requested animation: ${requestedAnimation}`);
+      setAnimation(requestedAnimation);
+
+      // Return to Idle after special animations complete
+      const timeout = setTimeout(() => {
+        setAnimation("Idle");
+      }, 5000);
+      return () => clearTimeout(timeout);
+    }
+  }, [requestedAnimation, actions, isTalking]);
+
+  // Handle audio events: attach once when audioElement becomes available
+  useEffect(() => {
+    console.log("🔧 Checking for audio element");
+
+    let cleanupAudioListeners = null;
+    const attachListeners = (audioElement) => {
+      console.log("✅ Audio element found! Attaching listeners");
+
+      const handleAudioPlay = () => {
+        if (!talkingAnimations.length) {
+          console.warn("⚠️ No Talking_* animations found");
+          return;
+        }
+        const chosen = pickRandomTalking();
+        console.log("🔊 Audio started, playing talking animation:", chosen);
+        talkTimer.current = 0;
+        setIsTalking(true);
+        if (chosen) setAnimation(chosen);
+      };
+
+      const handleAudioEnd = () => {
+        console.log("🔇 Audio ended/paused, forcing Idle");
+        talkTimer.current = 0;
+        setIsTalking(false);
+        setAnimation("Idle");
+      };
+
+      audioElement.addEventListener("play", handleAudioPlay);
+      audioElement.addEventListener("playing", handleAudioPlay);
+      audioElement.addEventListener("ended", handleAudioEnd);
+      audioElement.addEventListener("pause", handleAudioEnd);
+
+      // If it's already playing when we attach, go into talking mode
+      if (!audioElement.paused) {
+        handleAudioPlay();
+      }
+
+      cleanupAudioListeners = () => {
+        console.log("🧹 Removing audio listeners");
+        audioElement.removeEventListener("play", handleAudioPlay);
+        audioElement.removeEventListener("playing", handleAudioPlay);
+        audioElement.removeEventListener("ended", handleAudioEnd);
+        audioElement.removeEventListener("pause", handleAudioEnd);
+      };
+    };
+
+    // Poll for audio element every 100ms until it's ready
+    const pollInterval = setInterval(() => {
+      const audioElement = lipsyncManager.audioElement;
+      if (audioElement) {
+        clearInterval(pollInterval);
+        attachListeners(audioElement);
+      }
+    }, 100);
+
+    return () => {
+      clearInterval(pollInterval);
+      if (cleanupAudioListeners) cleanupAudioListeners();
+    };
+  }, [talkingAnimations]);
+
+  // Play current animation on the mixer
+  useEffect(() => {
+    if (actions[animation]) {
+      console.log(`▶️ Animating: ${animation}`);
+      actions[animation]
+        ?.reset()
+        .fadeIn(mixer.stats?.actions?.inUse === 0 ? 0 : 0.5)
+        .play();
+    }
     return () => actions[animation]?.fadeOut(0.5);
-  }, [animation]);
+  }, [animation, actions, mixer]);
+
+  // Enable glasses if they exist in the model
+  useEffect(() => {
+    if (!scene) return;
+
+    scene.traverse((obj) => {
+      if (obj.name.toLowerCase().includes("glass")) {
+        obj.visible = true;
+      }
+    });
+  }, [scene]);
 
   const lerpMorphTarget = (target, value, speed = 0.1) => {
+    if (!scene) return;
     scene.traverse((child) => {
       if (child.isSkinnedMesh && child.morphTargetDictionary) {
         const index = child.morphTargetDictionary[target];
@@ -62,7 +225,7 @@ export function Avatar(props) {
             set({
               [target]: value,
             });
-          } catch (e) {}
+          } catch (e) { }
         }
       }
     });
@@ -72,35 +235,48 @@ export function Avatar(props) {
   const [winkLeft, setWinkLeft] = useState(false);
   const [winkRight, setWinkRight] = useState(false);
 
-  useFrame(() => {
+  useFrame((_, delta) => {
+    // Eyes
     lerpMorphTarget("eyeBlinkLeft", blink || winkLeft ? 1 : 0, 0.5);
     lerpMorphTarget("eyeBlinkRight", blink || winkRight ? 1 : 0, 0.5);
 
     // LIPSYNC
-    if (setupMode) {
-      return;
+    if (!setupMode) {
+      const viseme = lipsyncManager.viseme;
+      const state = lipsyncManager.state;
+      lerpMorphTarget(
+        viseme,
+        1,
+        smoothMovements ? (state === "vowel" ? 0.2 : 0.4) : 1
+      );
+
+      Object.values(VISEMES).forEach((value) => {
+        if (viseme === value) return;
+        lerpMorphTarget(
+          value,
+          0,
+          smoothMovements ? (state === "vowel" ? 0.1 : 0.2) : 1
+        );
+      });
     }
 
-    const viseme = lipsyncManager.viseme;
-    const state = lipsyncManager.state;
-    lerpMorphTarget(
-      viseme,
-      1,
-      smoothMovements ? (state === "vowel" ? 0.2 : 0.4) : 1
-    );
-
-    Object.values(VISEMES).forEach((value) => {
-      if (viseme === value) {
-        return;
+    // While audio is playing, cycle between Talking_0/1/2
+    if (isTalking && talkingAnimations.length > 1) {
+      talkTimer.current += delta;
+      if (talkTimer.current >= TALK_SWITCH_INTERVAL) {
+        talkTimer.current = 0;
+        setAnimation((current) => {
+          const next = pickRandomTalking(current) || current;
+          if (next !== current) {
+            console.log("🔁 Switching talking animation:", current, "→", next);
+          }
+          return next;
+        });
       }
-      lerpMorphTarget(
-        value,
-        0,
-        smoothMovements ? (state === "vowel" ? 0.1 : 0.2) : 1
-      );
-    });
+    }
   });
 
+  // Random blinking
   useEffect(() => {
     let blinkTimeout;
     const nextBlink = () => {
@@ -117,73 +293,12 @@ export function Avatar(props) {
   }, []);
 
   return (
-    <group {...props} dispose={null} ref={group}>
-      <primitive object={nodes.Hips} />
-      <skinnedMesh
-        name="Wolf3D_Body"
-        geometry={nodes.Wolf3D_Body.geometry}
-        material={materials.Wolf3D_Body}
-        skeleton={nodes.Wolf3D_Body.skeleton}
-      />
-      <skinnedMesh
-        name="Wolf3D_Outfit_Bottom"
-        geometry={nodes.Wolf3D_Outfit_Bottom.geometry}
-        material={materials.Wolf3D_Outfit_Bottom}
-        skeleton={nodes.Wolf3D_Outfit_Bottom.skeleton}
-      />
-      <skinnedMesh
-        name="Wolf3D_Outfit_Footwear"
-        geometry={nodes.Wolf3D_Outfit_Footwear.geometry}
-        material={materials.Wolf3D_Outfit_Footwear}
-        skeleton={nodes.Wolf3D_Outfit_Footwear.skeleton}
-      />
-      <skinnedMesh
-        name="Wolf3D_Outfit_Top"
-        geometry={nodes.Wolf3D_Outfit_Top.geometry}
-        material={materials.Wolf3D_Outfit_Top}
-        skeleton={nodes.Wolf3D_Outfit_Top.skeleton}
-      />
-      <skinnedMesh
-        name="Wolf3D_Hair"
-        geometry={nodes.Wolf3D_Hair.geometry}
-        material={materials.Wolf3D_Hair}
-        skeleton={nodes.Wolf3D_Hair.skeleton}
-      />
-      <skinnedMesh
-        name="EyeLeft"
-        geometry={nodes.EyeLeft.geometry}
-        material={materials.Wolf3D_Eye}
-        skeleton={nodes.EyeLeft.skeleton}
-        morphTargetDictionary={nodes.EyeLeft.morphTargetDictionary}
-        morphTargetInfluences={nodes.EyeLeft.morphTargetInfluences}
-      />
-      <skinnedMesh
-        name="EyeRight"
-        geometry={nodes.EyeRight.geometry}
-        material={materials.Wolf3D_Eye}
-        skeleton={nodes.EyeRight.skeleton}
-        morphTargetDictionary={nodes.EyeRight.morphTargetDictionary}
-        morphTargetInfluences={nodes.EyeRight.morphTargetInfluences}
-      />
-      <skinnedMesh
-        name="Wolf3D_Head"
-        geometry={nodes.Wolf3D_Head.geometry}
-        material={materials.Wolf3D_Skin}
-        skeleton={nodes.Wolf3D_Head.skeleton}
-        morphTargetDictionary={nodes.Wolf3D_Head.morphTargetDictionary}
-        morphTargetInfluences={nodes.Wolf3D_Head.morphTargetInfluences}
-      />
-      <skinnedMesh
-        name="Wolf3D_Teeth"
-        geometry={nodes.Wolf3D_Teeth.geometry}
-        material={materials.Wolf3D_Teeth}
-        skeleton={nodes.Wolf3D_Teeth.skeleton}
-        morphTargetDictionary={nodes.Wolf3D_Teeth.morphTargetDictionary}
-        morphTargetInfluences={nodes.Wolf3D_Teeth.morphTargetInfluences}
-      />
+    <group position={props.position} rotation={props.rotation} scale={props.scale} dispose={null} ref={group}>
+      <primitive object={scene} />
     </group>
   );
 }
 
-useGLTF.preload("/models/64f1a714fe61576b46f27ca2.glb");
+useGLTF.preload("/models/6936b0da347390125d6069ae (2).glb");
+useGLTF.preload("/models/Sara.glb");
 useGLTF.preload("/models/animations.glb");

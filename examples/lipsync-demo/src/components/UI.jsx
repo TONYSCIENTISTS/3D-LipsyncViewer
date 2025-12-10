@@ -2,6 +2,10 @@ import { Canvas } from "@react-three/fiber";
 import { Suspense, useEffect, useState } from "react";
 import { Experience } from "./Experience";
 import { Visualizer } from "./Visualizer";
+import { ChatInterface } from "./ChatInterface";
+import { SettingsPanel } from "./SettingsPanel";
+import { LoadingProgress } from "./LoadingProgress";
+import { useChat } from "../hooks/useChat";
 
 const examples = [
   {
@@ -15,6 +19,7 @@ const examples = [
 ];
 
 export const UI = () => {
+  const { sendMessage, loading, requestedAnimation, triggerIntro, audioReady, loadingProgress } = useChat();
   const [currentHash, setCurrentHash] = useState(
     window.location.hash.replace("#", "")
   );
@@ -32,39 +37,92 @@ export const UI = () => {
     };
   }, []);
 
+  const qualityPresets = {
+    Low: { pixelRatio: 0.5, shadows: false, antialias: false },
+    Medium: { pixelRatio: 1, shadows: true, antialias: false },
+    High: { pixelRatio: window.devicePixelRatio, shadows: true, antialias: true },
+    Ultra: {
+      pixelRatio: Math.min(window.devicePixelRatio * 2, 3),
+      shadows: true,
+      antialias: true,
+      toneMapping: true,
+      shadowMapSize: 2048
+    },
+  };
+
+  const [quality, setQuality] = useState("Medium");
+  const settings = qualityPresets[quality];
+
+  const [backgroundColor, setBackgroundColor] = useState({
+    top: "#00D4FF",      // Cyan
+    bottom: "#D946EF"    // Magenta
+  });
+
+  const [lightIntensity, setLightIntensity] = useState(1.0);
+  const [smoothMovements, setSmoothMovements] = useState(true);
+  const [selectedCharacter, setSelectedCharacter] = useState("aima");
+  const [reloadKey, setReloadKey] = useState(0);
+  const [characterVisible, setCharacterVisible] = useState(false);
+
+  // Handle when user clicks to start
+  const handleReady = () => {
+    setCharacterVisible(true);
+    triggerIntro();
+  };
+
   return (
-    <section className="flex flex-col-reverse lg:flex-row overflow-hidden h-full w-full">
-      <div className="p-10 lg:max-w-2xl overflow-y-auto">
-        <a
-          className="pointer-events-auto select-none opacity-0 animate-fade-in-down animation-delay-200 "
-          href="https://wawasensei.dev"
-          target="_blank"
-        >
-          <img
-            src="/images/wawasensei.png"
-            alt="Wawa Sensei logo"
-            className="w-20 h-20 object-contain"
-          />
-        </a>
+    <section className="flex overflow-hidden h-full w-full">
+      {/* Keep Visualizer mounted but hidden - needed for audio routing */}
+      <div className="hidden">
         <Visualizer />
       </div>
-      <div className="flex-1 bg-gradient-to-b from-pink-400 to-pink-200 relative">
-        <Canvas shadows camera={{ position: [12, 8, 26], fov: 30 }}>
-          <Suspense>
-            <Experience />
-          </Suspense>
-        </Canvas>
-        <div className="bg-gradient-to-b from-transparent to-black/90 absolute bottom-0 top-3/4 left-0 right-0 pointer-events-none z-10">
-          <div className="bottom-4 fixed z-20 right-4 md:right-15 flex items-center gap-4 animation-delay-1500 animate-fade-in-up opacity-0 ">
-            <div className="w-20 h-px bg-white/60"></div>
-            <a
-              href="https://lessons.wawasensei.dev/courses/react-three-fiber/"
-              className="text-white/60 text-xs pointer-events-auto select-none"
-            >
-              Learn Three.js & React Three Fiber
-            </a>
-          </div>
-        </div>
+
+      <div
+        className="flex-1 relative"
+        style={{
+          background: `linear-gradient(to bottom, ${backgroundColor.top}, ${backgroundColor.bottom})`
+        }}
+      >
+        {characterVisible && (
+          <Canvas
+            shadows={settings.shadows}
+            dpr={settings.pixelRatio}
+            gl={{ antialias: settings.antialias }}
+            camera={{ position: [0, 1.6, 2.2], fov: 50 }}
+          >
+            <Suspense>
+              <Experience
+                key={reloadKey}
+                requestedAnimation={requestedAnimation}
+                lightIntensity={lightIntensity}
+                smoothMovements={smoothMovements}
+                selectedCharacter={selectedCharacter}
+              />
+            </Suspense>
+          </Canvas>
+        )}
+
+        <SettingsPanel
+          quality={quality}
+          onQualityChange={setQuality}
+          backgroundColor={backgroundColor}
+          onBackgroundColorChange={setBackgroundColor}
+          lightIntensity={lightIntensity}
+          onLightIntensityChange={setLightIntensity}
+          smoothMovements={smoothMovements}
+          onSmoothMovementsChange={setSmoothMovements}
+          selectedCharacter={selectedCharacter}
+          onCharacterChange={setSelectedCharacter}
+          onSave={() => {
+            console.log("Reloading character");
+            setReloadKey(prev => prev + 1);
+          }}
+        />
+
+        <ChatInterface onMessageSent={sendMessage} isLoadingExternal={loading} />
+
+        {/* Loading progress - tap at 100% to start */}
+        {!characterVisible && <LoadingProgress progress={loadingProgress} onReady={handleReady} />}
       </div>
     </section>
   );
